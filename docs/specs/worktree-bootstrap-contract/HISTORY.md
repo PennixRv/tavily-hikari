@@ -1,5 +1,15 @@
 # History
 
+## 2026-11-09：submodule 工作树定位修复
+
+根协调任务 `paseo-based-parallelism-integration-design` 的 W2 发现：以 Git common directory
+的父目录推算 primary worktree，会在 submodule 中误入 superproject 的 Git 元数据目录。
+现读取 `git worktree list --porcelain -z` 的首条工作树记录；对 absorbed submodule，
+再按 common directory 的原生 `core.worktree` 解析实际 checkout，并核对 common directory 身份。
+primary checkout 不可用时，自动准备只告警，显式 strict 准备失败并提示 `git worktree repair`。
+隔离 smoke 增加真实 submodule、含空格路径、独立 env 来源、目标不覆盖及失效来源两种失败语义。
+本轮不读取实际用户 env，不启动服务，也不改变原有依赖准备范围。
+
 ## Decision Trace
 
 - 2026-07-15: 决定把 linked worktree bootstrap 正式收口为 shared `post-checkout` + explicit `worktree:setup` 双入口，而不是继续散落在启动脚本里做隐式补救。

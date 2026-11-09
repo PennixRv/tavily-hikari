@@ -254,9 +254,14 @@ assert_file_contains <(printf '%s' "$primary_output") 'primary worktree detected
 assert_equal "$primary_bun_before" "$(count_lines "$bun_log")" 'bun log line count after primary manual run'
 assert_equal "$primary_cargo_before" "$(count_lines "$cargo_log")" 'cargo log line count after primary manual run'
 
+missing_tools_bin="$tmp_dir/missing-tools-bin"
+mkdir -p "$missing_tools_bin"
+for tool in bash git dirname mkdir grep mv cat chmod find basename cp date; do
+  ln -s "$(command -v "$tool")" "$missing_tools_bin/$tool"
+done
 tools_warn_output="$(
   cd "$fixture_repo"
-  PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+  PATH="$missing_tools_bin" \
     bash scripts/install-hooks.sh 2>&1
 )"
 assert_file_contains <(printf '%s' "$tools_warn_output") 'lefthook not found'
@@ -264,7 +269,7 @@ assert_file_contains <(printf '%s' "$tools_warn_output") 'lefthook not found'
 warn_worktree="$tmp_dir/warn-linked"
 warn_output="$(
   CUSTOM_POST_CHECKOUT_LOG="$custom_hook_log" \
-  PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+  PATH="$missing_tools_bin" \
     git -C "$fixture_repo" worktree add --detach "$warn_worktree" HEAD 2>&1
 )"
 assert_file_contains <(printf '%s' "$warn_output") 'bun not found'
@@ -274,6 +279,41 @@ if [ -d "$warn_worktree/node_modules" ] || [ -d "$warn_worktree/web/node_modules
   printf 'missing-tool bootstrap should not create dependency directories\n' >&2
   exit 1
 fi
+
+# A submodule's common dir is outside its checkout. Exercise it with spaces and
+# synthetic env only; do not use the developer checkout's configuration.
+super_repo="$tmp_dir/super project"
+mkdir -p "$super_repo"
+git -C "$super_repo" init -b main >/dev/null
+git -C "$super_repo" -c protocol.file.allow=always submodule add "$fixture_repo" 'modules/hikari source' >/dev/null 2>&1
+sub_repo="$super_repo/modules/hikari source"
+printf 'SUBMODULE_ONLY=fixture\n' > "$sub_repo/.env"
+sub_linked="$tmp_dir/submodule linked"
+git -C "$sub_repo" worktree add --detach "$sub_linked" HEAD >/dev/null 2>&1
+sub_output="$(
+  cd "$sub_linked"
+  PATH="$fake_bin:$PATH" BUN_INSTALL_LOG="$bun_log" CARGO_FETCH_LOG="$cargo_log" \
+    bash scripts/worktree-bootstrap.sh --manual --strict 2>&1
+)"
+assert_file_contains <(printf '%s' "$sub_output") 'linked worktree bootstrap completed'
+assert_file_contains "$sub_linked/.env" 'SUBMODULE_ONLY=fixture'
+assert_not_contains "$sub_linked/.env" 'PRIMARY_SHARED=from-primary'
+assert_file_contains "$sub_linked/.tmp/worktree-bootstrap.v1.done" "primary_root=$sub_repo"
+printf 'LOCAL_ONLY=keep\n' > "$sub_linked/.env"
+PATH="$fake_bin:$PATH" BUN_INSTALL_LOG="$bun_log" CARGO_FETCH_LOG="$cargo_log" \
+  bash "$sub_linked/scripts/worktree-bootstrap.sh" --manual --strict --force >/dev/null
+assert_file_contains "$sub_linked/.env" 'LOCAL_ONLY=keep'
+
+# A missing primary checkout must never silently copy a superproject env.
+mv "$sub_repo" "$sub_repo.moved"
+if missing_output="$(bash "$sub_linked/scripts/worktree-bootstrap.sh" --manual --strict --force 2>&1)"; then
+  printf 'strict bootstrap must refuse an unavailable primary worktree\n' >&2
+  exit 1
+fi
+assert_file_contains <(printf '%s' "$missing_output") 'git worktree repair'
+warn_output="$(bash "$sub_linked/scripts/worktree-bootstrap.sh" --hook --force 2>&1)"
+assert_file_contains <(printf '%s' "$warn_output") 'warning:'
+mv "$sub_repo.moved" "$sub_repo"
 
 git -C "$fixture_repo" rm -f scripts/worktree-bootstrap.sh >/dev/null
 HOOK_CHAIN_LOG="$hook_chain_log" LEFTHOOK=0 git -C "$fixture_repo" commit -m 'legacy fixture without bootstrap script' >/dev/null

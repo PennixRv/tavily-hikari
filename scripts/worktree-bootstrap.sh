@@ -179,7 +179,6 @@ fi
 
 git_dir="$(resolve_repo_path "$git_dir_raw")"
 common_dir="$(resolve_repo_path "$common_dir_raw")"
-primary_root="$(cd "$common_dir/.." && pwd)"
 state_dir="$repo_root/.tmp"
 state_file="$state_dir/worktree-bootstrap.v1.done"
 
@@ -187,6 +186,29 @@ if [ "$git_dir" = "$common_dir" ]; then
   if [ "$trigger" = "manual" ]; then
     info "primary worktree detected; skipping linked-worktree bootstrap"
   fi
+  exit 0
+fi
+
+# The common directory of a submodule is inside the superproject, not its checkout.
+if ! IFS= read -r -d '' primary_record < <(git -C "$repo_root" worktree list --porcelain -z 2>/dev/null) ||
+  [[ "$primary_record" != 'worktree '* ]]; then
+  fail_or_warn "unable to resolve primary worktree; run git worktree repair before worktree:setup"
+  exit 0
+fi
+primary_root="${primary_record#worktree }"
+# Git lists an absorbed submodule's gitdir as its primary worktree. Its
+# repository-local core.worktree is authoritative and relative to that gitdir.
+if primary_config="$(git --git-dir="$common_dir" config --local --get core.worktree 2>/dev/null)"; then
+  case "$primary_config" in
+    /*) primary_root="$primary_config" ;;
+    *) primary_root="$common_dir/$primary_config" ;;
+  esac
+fi
+primary_root="$(cd "$primary_root" 2>/dev/null && pwd -P)" || primary_root=""
+if [ ! -d "$primary_root" ] ||
+  [ "$(git -C "$primary_root" rev-parse --show-toplevel 2>/dev/null)" != "$primary_root" ] ||
+  [ "$(git -C "$primary_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" != "$common_dir" ]; then
+  fail_or_warn "primary worktree is unavailable or has changed identity; run git worktree repair before worktree:setup"
   exit 0
 fi
 
